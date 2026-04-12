@@ -278,7 +278,7 @@ function setEngine(e, silent) {
 function checkKeys() {
   var gk = document.getElementById('gemini-key').value.trim();
   var ck = document.getElementById('claude-key').value.trim();
-  var gv = gk.startsWith('AIza') && gk.length > 20;
+  var gv = gk.length > 20; // Gemini keys usually start with AIza but format can vary
   var cv = ck.startsWith('sk-ant-') && ck.length > 20;
   document.getElementById('gemini-status').classList.toggle('ok', gv);
   document.getElementById('claude-status').classList.toggle('ok', cv);
@@ -322,24 +322,62 @@ function handleDrop(e) { e.preventDefault(); document.getElementById('drop-zone'
 function handleDragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('drag'); }
 function handleDragLeave() { document.getElementById('drop-zone').classList.remove('drag'); }
 
+// Compress image to stay under API limits (Claude: 5MB, Gemini: 4MB)
+// Also caps resolution to 1600px max dimension for faster analysis
+function compressImage(dataUrl, mimeType, callback) {
+  var img = new Image();
+  img.onload = function() {
+    var MAX_DIM = 1600;
+    var MAX_BYTES = 3.8 * 1024 * 1024; // 3.8MB safe limit for both APIs
+    var w = img.width, h = img.height;
+    if (w > MAX_DIM || h > MAX_DIM) {
+      if (w > h) { h = Math.round(h * MAX_DIM / w); w = MAX_DIM; }
+      else { w = Math.round(w * MAX_DIM / h); h = MAX_DIM; }
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    var quality = 0.88;
+    var result = canvas.toDataURL('image/jpeg', quality);
+    // If still too big, reduce quality iteratively
+    while (result.length * 0.75 > MAX_BYTES && quality > 0.4) {
+      quality -= 0.1;
+      result = canvas.toDataURL('image/jpeg', quality);
+    }
+    callback(result, 'image/jpeg');
+  };
+  img.src = dataUrl;
+}
+
 function handleFiles(files) {
   Array.from(files).forEach(function(f) {
     if (!f.type.startsWith('image/')) return;
     var reader = new FileReader();
-    reader.onload = function(e) { images.push({ src: e.target.result, type: f.type }); renderPreviews(); };
+    reader.onload = function(e) {
+      compressImage(e.target.result, f.type, function(compressed, mimeType) {
+        images.push({ src: compressed, type: mimeType });
+        renderPreviews();
+      });
+    };
     reader.readAsDataURL(f);
   });
 }
 function removeImg(i) { images.splice(i, 1); renderPreviews(); }
+function imgSizeKB(src) { return Math.round(src.length * 0.75 / 1024); }
+
 function renderPreviews() {
   var coinLabels = ['Obverse', 'Reverse', 'Detail', 'Extra'];
   document.getElementById('preview-grid').innerHTML = images.map(function(img, i) {
+    var kb = imgSizeKB(img.src);
+    var sizeLabel = kb > 1024 ? (kb/1024).toFixed(1) + 'MB' : kb + 'KB';
     return '<div class="preview-item"><img src="' + img.src + '" alt="">' +
-      (mode === 'coins' && coinLabels[i] ? '<span class="preview-label">' + coinLabels[i] + '</span>' : '') +
+      (mode === 'coins' && coinLabels[i] ? '<span class="preview-label">' + coinLabels[i] + '</span>' : '<span class="preview-label">' + sizeLabel + '</span>') +
       '<button class="rm-btn" onclick="removeImg(' + i + ')">x</button></div>';
   }).join('');
+  var totalKB = images.reduce(function(sum, img) { return sum + imgSizeKB(img.src); }, 0);
+  var totalLabel = totalKB > 1024 ? (totalKB/1024).toFixed(1) + 'MB' : totalKB + 'KB';
   document.getElementById('upload-label').textContent = images.length > 0
-    ? images.length + ' image' + (images.length > 1 ? 's' : '') + ' ready'
+    ? images.length + ' image' + (images.length > 1 ? 's' : '') + ' ready (' + totalLabel + ' total)'
     : 'Tap to take a photo or select images';
   updateBtn();
 }
@@ -381,7 +419,7 @@ async function callGemini(apiKey, parts, model) {
   var resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model.id + ':generateContent?key=' + apiKey, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.2, maxOutputTokens: 4096 } })
+    body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.2, maxOutputTokens: 4096, responseMimeType: "application/json" } })
   });
   if (!resp.ok) {
     var err = await resp.json().catch(function() { return {}; });
@@ -390,7 +428,17 @@ async function callGemini(apiKey, parts, model) {
     throw new Error('__RETRY__' + msg);
   }
   var data = await resp.json();
-  var raw = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) || '';
+  // Check for safety blocks or empty candidates
+  if (!data.candidates || data.candidates.length === 0) {
+    var reason = (data.promptFeedback && data.promptFeedback.blockReason) || 'unknown';
+    throw new Error('__RETRY__Response blocked or empty (reason: ' + reason + '). Try again.');
+  }
+  var candidate = data.candidates[0];
+  // Check finish reason - RECITATION/SAFETY means blocked
+  if (candidate.finishReason && candidate.finishReason !== 'STOP' && candidate.finishReason !== 'MAX_TOKENS') {
+    throw new Error('__RETRY__Response stopped early (' + candidate.finishReason + '). Try again.');
+  }
+  var raw = (candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text) || '';
   if (!raw) throw new Error('__RETRY__Empty response.');
   return raw;
 }
@@ -432,7 +480,11 @@ async function runClaude(apiKey, prompt) {
   });
   if (!resp.ok) {
     var err = await resp.json().catch(function() { return {}; });
-    throw new Error((err.error && err.error.message) || ('HTTP ' + resp.status));
+    var msg = (err.error && err.error.message) || ('HTTP ' + resp.status);
+    if (resp.status === 401) throw new Error('Invalid Claude API key. Check it at console.anthropic.com');
+    if (resp.status === 429) throw new Error('Claude rate limit hit. Wait a moment and try again.');
+    if (resp.status === 413 || msg.indexOf('exceeds') !== -1) throw new Error('Image still too large after compression. Try a lower-resolution photo.');
+    throw new Error(msg);
   }
   var data = await resp.json();
   var raw = (data.content || []).map(function(b) { return b.text || ''; }).join('');
