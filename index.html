@@ -538,37 +538,92 @@ function renderPreviews() {
 var PROMPT_BOOKS = 'You are an expert used book buyer and reseller. Analyze the uploaded image(s) of books and identify every visible book.\nFor each book provide three price points: market_price (what a patient private seller gets), quick_price (priced to sell within days), and dealer_price (what a used book dealer or buyback service would pay wholesale — typically 10-30% of market value).\nCRITICAL: Respond with ONE valid JSON object only. No markdown. No code fences. No text before or after. Start with { end with }. Double quotes only. No trailing commas.\nFormat: {"summary":{"total_items":0,"worth_listing":0,"total_market_value":"$0-$0"},"items":[{"id":1,"title":"Title","author":"Author","condition":"Good","condition_notes":"notes","market_price":"$10","quick_price":"$7","dealer_price":"$2","time_to_sell_market":"2-4 weeks","time_to_sell_quick":"3-7 days","priority":"medium","platform_tip":"eBay","rationale":"reason"}]}';
 
 function buildCoinPrompt() {
-  var base = 'You are a professional numismatist with expertise in U.S. and world coins. ';
   var cols = parseInt(document.getElementById('grid-cols') ? document.getElementById('grid-cols').value : '3') || 3;
   var pairing = coinPairing;
 
+  // ── IDENTIFICATION RULES (highest priority) ──────────────────────────────
+  var identRules =
+    'STEP 1 — IDENTIFICATION (do this before grading or valuing):\n' +
+    'A. Examine the coin type, design, and denomination from the obverse.\n' +
+    'B. Read the date carefully — look for all four digits.\n' +
+    'C. MINT MARK — this is critical. Follow this process:\n' +
+    '   - Actively look for a mint mark in ALL known locations for the coin type:\n' +
+    '     Lincoln cents (pre-1965): reverse lower left of memorial or wheat stalks\n' +
+    '     Jefferson nickels: reverse right of Monticello (pre-1968), then obverse\n' +
+    '     Roosevelt/Mercury dimes: reverse lower left\n' +
+    '     Washington quarters: reverse (pre-1968), then obverse above date\n' +
+    '     Franklin/Walking Liberty halves: reverse\n' +
+    '     Morgan/Peace dollars: reverse\n' +
+    '     Buffalo nickels: reverse below FIVE CENTS\n' +
+    '     Indian Head cents: no mint mark on obverse; check reverse\n' +
+    '   - Possible mint marks: P (Philadelphia, often absent on older coins), D (Denver), S (San Francisco), O (New Orleans), CC (Carson City), W (West Point)\n' +
+    '   - DO NOT default to "None" or "Philadelphia" unless you have actively examined the mint mark location and confirmed no letter is present.\n' +
+    '   - If the image is unclear at the mint mark location, report mint_mark as "Uncertain — examine under magnification" and set grade_confidence to "low".\n' +
+    '   - NEVER assume Philadelphia. If you see ANY mark or smudge in the mint mark location, report what you observe.\n' +
+    'D. SPECIAL TOKENS & NON-STANDARD COINS:\n' +
+    '   - OPA (Office of Price Administration) ration tokens from WWII: These are small cardboard/fiber tokens, NOT metal coins.\n' +
+    '     Red point tokens are identified by a TWO-LETTER code (e.g. "GH", "TK", "BV") — never a single letter.\n' +
+    '     Blue point tokens also use two-letter codes.\n' +
+    '     Do not apply Sheldon grades to OPA tokens — use condition terms: Excellent, Very Good, Good, Fair, Poor.\n' +
+    '   - Trade tokens, transportation tokens, and store cards: identify issuer, location, and era.\n' +
+    '   - Foreign coins: identify country, denomination, and era before grading.\n\n';
+
+  // ── GRADING RULES ────────────────────────────────────────────────────────
+  var gradingRules =
+    'STEP 2 — GRADING (Sheldon scale for standard coins):\n' +
+    'Evaluate in this order: (1) surface preservation / wear on high points, (2) luster, (3) strike quality, (4) eye appeal.\n' +
+    'Key grade checkpoints:\n' +
+    '  MS-60 to MS-70: No wear. Differentiate by contact marks and luster.\n' +
+    '  AU-50 to AU-58: Slight wear on highest points only. Much original luster remains.\n' +
+    '  EF-40 to EF-45: Light wear on high points. Major design details sharp.\n' +
+    '  VF-20 to VF-35: Moderate wear. Main features clear but flat.\n' +
+    '  F-12 to F-15: Even moderate-heavy wear. Lettering and date clear.\n' +
+    '  VG-8 to VG-10: Well worn. Main features clear but flat.\n' +
+    '  G-4 to G-6: Heavily worn. Design visible but faint in spots.\n' +
+    '  AG-3 and below: Very heavily worn.\n' +
+    'Note any cleaning, artificial toning, scratches, or environmental damage — these reduce grade and value significantly.\n\n';
+
+  // ── PAIRING INSTRUCTIONS ─────────────────────────────────────────────────
+  var pairingInstr = '';
   if (pairing === 'numbered') {
-    base += 'The coins are arranged in a numbered grid. Each coin position has a visible number in the photo. ' +
-      'Two images are provided: the first shows the OBVERSE (heads) side, the second shows the REVERSE (tails) side. ' +
-      'The grid has ' + cols + ' columns. When the grid is flipped to show the reverse, positions mirror horizontally — ' +
-      'the coin at column 1 obverse corresponds to column ' + cols + ' on the reverse image, and so on. ' +
-      'Match each obverse to its reverse using the visible grid numbers as the authoritative reference. ' +
-      'Identify each coin as "Grid #1", "Grid #2" etc.';
+    pairingInstr =
+      'IMAGE PAIRING: Coins are in a numbered grid. First image = OBVERSE, second = REVERSE. ' +
+      'Grid has ' + cols + ' columns. Physical flip mirrors positions horizontally: ' +
+      'column 1 obverse = column ' + cols + ' reverse. ' +
+      'Use visible grid numbers as the authoritative match. Label each coin "Grid #1", "Grid #2" etc.';
   } else if (pairing === 'mirror') {
-    base += 'The coins are arranged in an unnumbered grid and physically flipped over to show the reverse side. ' +
-      'Two images are provided: the first is the OBVERSE (heads), the second is the REVERSE (tails). ' +
-      'IMPORTANT: Because the grid was physically flipped, the reverse image is a HORIZONTAL MIRROR of the obverse — ' +
-      'the leftmost coin on the obverse corresponds to the RIGHTMOST coin on the reverse, and so on for each row. ' +
-      'Use this mirror-flip logic to correctly pair each obverse with its reverse. ' +
-      'Identify each coin by its position as "Position #1" (top-left on obverse), "Position #2", etc. reading left-to-right, top-to-bottom on the obverse image.';
+    pairingInstr =
+      'IMAGE PAIRING: Unnumbered grid, physically flipped. First image = OBVERSE, second = REVERSE. ' +
+      'The flip creates a HORIZONTAL MIRROR: leftmost obverse coin = rightmost reverse coin in each row. ' +
+      'Apply this mirror logic row by row. Label coins "Position #1", "Position #2" etc. (left-to-right, top-to-bottom on obverse).';
   } else if (pairing === 'sequential') {
-    base += 'The images are uploaded as sequential obverse/reverse pairs for individual coins: ' +
-      'image 1 = obverse of coin 1, image 2 = reverse of coin 1, image 3 = obverse of coin 2, image 4 = reverse of coin 2, and so on. ' +
-      'Pair them sequentially. If there is an odd number of images, the last coin has only an obverse photo. ' +
-      'Identify each coin as "Coin #1", "Coin #2" etc.';
+    pairingInstr =
+      'IMAGE PAIRING: Sequential pairs. Image 1 = obverse of coin 1, image 2 = reverse of coin 1, ' +
+      'image 3 = obverse of coin 2, etc. Odd number of images = last coin has obverse only. Label "Coin #1", "Coin #2" etc.';
   } else {
-    base += 'Only obverse (heads) images are provided — no reverse photos. Grade and value each coin from the front face only, ' +
-      'and note in grade_notes that grading is based on obverse only. ' +
-      'Identify each coin as "Coin #1", "Coin #2" etc.';
+    pairingInstr =
+      'IMAGE PAIRING: Obverse only. Grade from front face alone. Note this limitation in grade_notes. Label "Coin #1", "Coin #2" etc.';
   }
 
-  base += '\nCRITICAL: Respond with ONE valid JSON object only. No markdown. No code fences. No text before or after. Start with { end with }. Double quotes only. No trailing commas.' +
-    '\nProvide three price points: market_price (patient private seller), quick_price (priced to sell fast), dealer_price (what a coin dealer would pay wholesale — typically 40-60% of market for common coins, higher for key dates).\nFormat: {"summary":{"total_coins":0,"total_market_value":"$0","highlight":"note"},"items":[{"id":"Grid #1","coin_name":"1921-D Morgan Silver Dollar","denomination":"Dollar","year":"1921","mint_mark":"D","sheldon_grade":"VF-30","grade_confidence":"medium","grade_notes":"notes","obverse_notes":"notes","reverse_notes":"notes","market_price":"$25","quick_price":"$18","dealer_price":"$12","time_to_sell_market":"1-3 weeks","time_to_sell_quick":"2-5 days","priority":"medium","rationale":"reason"}]}';
+  var base =
+    'You are a senior professional numismatist with 30+ years grading U.S. and world coins, tokens, and medals. ' +
+    'You have encyclopedic knowledge of key dates, mint marks, error coins, and specialty items including WWII ration tokens.\n\n' +
+    identRules +
+    gradingRules +
+    pairingInstr + '\n\n' +
+    'CRITICAL: Respond with ONE valid JSON object only. No markdown. No code fences. No text before or after. Start with { end with }. Double quotes only. No trailing commas.\n' +
+    'Provide three price points: market_price (patient private seller), quick_price (priced to sell fast), ' +
+    'dealer_price (what a coin dealer would pay wholesale — typically 40-60% of market for common coins, higher for key dates).\n' +
+    'Format: {"summary":{"total_coins":0,"total_market_value":"$0","highlight":"note"},"items":[' +
+    '{"id":"Grid #1","coin_name":"1921-D Morgan Silver Dollar","denomination":"Dollar","year":"1921",' +
+    '"mint_mark":"D","sheldon_grade":"VF-30","grade_confidence":"medium",' +
+    '"grade_notes":"Moderate wear on hair above ear and eagle breast. No cleaning. Luster in protected areas.",' +
+    '"obverse_notes":"Date clear. Mint mark D confirmed at reverse. Liberty portrait shows even wear.",' +
+    '"reverse_notes":"Eagle breast and wing tips show wear consistent with VF. Mint mark clearly D.",' +
+    '"market_price":"$35","quick_price":"$25","dealer_price":"$16",' +
+    '"time_to_sell_market":"1-3 weeks","time_to_sell_quick":"3-7 days","priority":"medium",' +
+    '"rationale":"Common date Morgan in VF, solid type coin"}]}';
+
   return base;
 }
 
@@ -582,23 +637,29 @@ var PROMPT_ELEC = 'You are an expert consumer electronics and video game reselle
 
 // ── JSON REPAIR ───────────────────────────────────────
 function extractJSON(raw) {
+  // Step 1: strip markdown fences and leading/trailing whitespace
   var text = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  // Step 2: strip any prose before the first { and after the last }
   var start = text.indexOf('{'), end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON found in response.');
+  if (start === -1 || end === -1) throw new Error('No JSON object found in response. Please try again.');
   text = text.slice(start, end + 1);
+  // Step 3: direct parse
   try { return JSON.parse(text); } catch(e) {}
+  // Step 4: common fixes
   text = text
-    .replace(/,\s*([}\]])/g, '$1')
-    .replace(/:\s*None\b/g, ': null')
-    .replace(/:\s*True\b/g, ': true')
-    .replace(/:\s*False\b/g, ': false');
+    .replace(/,\s*([}\]])/g, '$1')           // trailing commas
+    .replace(/:\s*None\b/g, ': null')         // Python None
+    .replace(/:\s*True\b/g, ': true')         // Python True
+    .replace(/:\s*False\b/g, ': false')       // Python False
+    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":'); // unquoted keys
   try { return JSON.parse(text); } catch(e) {}
-  var itemsMatch = text.match(/"items"\s*:\s*\[[\s\S]*\]/);
-  var summaryMatch = text.match(/"summary"\s*:\s*\{[^}]*\}/);
+  // Step 5: try to salvage items array even if outer structure is broken
+  var itemsMatch = text.match(/"items"\s*:\s*\[[\s\S]*?\](?=\s*[,}])/);
+  var summaryMatch = text.match(/"summary"\s*:\s*\{[^{}]*\}/);
   if (itemsMatch) {
     try { return JSON.parse('{' + (summaryMatch ? summaryMatch[0] + ',' : '') + itemsMatch[0] + '}'); } catch(e) {}
   }
-  throw new Error('Could not parse AI response. Please try again.');
+  throw new Error('Could not parse AI response. Please try again — Gemini sometimes returns malformed output.');
 }
 
 // ── GEMINI CASCADE ────────────────────────────────────
@@ -612,7 +673,7 @@ async function callGemini(apiKey, parts, model) {
   var resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model.id + ':generateContent?key=' + apiKey, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.2, maxOutputTokens: 4096, responseMimeType: "application/json" } })
+    body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 4096 } })
   });
   if (!resp.ok) {
     var err = await resp.json().catch(function() { return {}; });
@@ -689,8 +750,15 @@ async function runClaude(apiKey, prompt) {
 // ── GROK ─────────────────────────────────────────────
 async function runGrok(apiKey, prompt) {
   setStatus('Analyzing with Grok...', 'This may take 15-25 seconds');
-  var msgContent = images.map(function(img) {
-    return { type: 'image_url', image_url: { url: img.src } };
+  // Grok vision uses base64 format with image_url type
+  var msgContent = [];
+  images.forEach(function(img) {
+    var base64 = img.src.split(',')[1];
+    var mimeType = img.type || 'image/jpeg';
+    msgContent.push({
+      type: 'image_url',
+      image_url: { url: 'data:' + mimeType + ';base64,' + base64 }
+    });
   });
   msgContent.push({ type: 'text', text: prompt });
   var resp = await fetch('https://api.x.ai/v1/chat/completions', {
@@ -700,7 +768,7 @@ async function runGrok(apiKey, prompt) {
       'Authorization': 'Bearer ' + apiKey
     },
     body: JSON.stringify({
-      model: 'grok-2-vision-latest',
+      model: 'grok-2-vision-1212',
       messages: [{ role: 'user', content: msgContent }],
       max_tokens: 4000,
       temperature: 0.2
@@ -728,7 +796,7 @@ async function analyze() {
   document.getElementById('analyze-btn').disabled = true;
   var extraNotes = document.getElementById('extra-notes').value.trim();
   var prompt = mode === 'books' ? PROMPT_BOOKS : mode === 'coins' ? buildCoinPrompt() : mode === 'memo' ? PROMPT_MEMO : mode === 'glass' ? PROMPT_GLASS : PROMPT_ELEC;
-  prompt += '\n\nAnalyze all items and return the JSON.';
+  prompt += '\n\nAnalyze all items and return the JSON. IMPORTANT: Your response must begin with { and end with } with no other text.';
   if (extraNotes) {
     prompt += '\n\nADDITIONAL DETAILS PROVIDED BY THE SELLER (treat these as authoritative — they know things the photos cannot show):\n' + extraNotes;
   }
