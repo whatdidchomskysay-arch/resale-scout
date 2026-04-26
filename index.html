@@ -39,6 +39,7 @@
   .engine-badge { font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 500; padding: 3px 8px; border-radius: 20px; letter-spacing: 0.5px; white-space: nowrap; }
   .engine-badge.gemini { background: #E8F0FE; color: var(--google-blue); }
   .engine-badge.claude { background: #F0EDF8; color: #6B46C1; }
+  .engine-badge.grok { background: #F0F0F0; color: #111; }
 
   .keys-panel { background: var(--paper); border-bottom: 1px solid var(--border); padding: 12px 1.25rem; display: flex; flex-direction: column; gap: 8px; }
   .key-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -196,6 +197,7 @@
     <select class="engine-select" id="engine-select" onchange="setEngine(this.value)">
       <option value="gemini">Gemini (free)</option>
       <option value="claude">Claude Sonnet</option>
+      <option value="grok">Grok</option>
     </select>
     <span class="engine-badge gemini" id="engine-badge">Free</span>
   </div>
@@ -215,6 +217,13 @@
     <div class="key-status" id="claude-status"></div>
     <span class="key-saved" id="claude-saved" style="display:none">locked</span>
     <a class="get-key claude-link" href="https://console.anthropic.com" target="_blank">Get key</a>
+  </div>
+  <div class="key-row" id="grok-key-row">
+    <label>Grok key</label>
+    <input type="password" class="key-input inactive" id="grok-key" placeholder="xai-..." oninput="checkKeys()">
+    <div class="key-status" id="grok-status"></div>
+    <span class="key-saved" id="grok-saved" style="display:none">locked</span>
+    <a class="get-key" href="https://console.x.ai" target="_blank" style="color:#111">Get key</a>
   </div>
   <button class="keys-toggle" id="keys-toggle" onclick="toggleKeys()">Hide keys</button>
 </div>
@@ -348,9 +357,11 @@ function init() {
   try {
     var gk = localStorage.getItem('rs_gemini_key');
     var ck = localStorage.getItem('rs_claude_key');
+    var xk = localStorage.getItem('rs_grok_key');
     var eng = localStorage.getItem('rs_engine') || 'gemini';
     if (gk) document.getElementById('gemini-key').value = gk;
     if (ck) document.getElementById('claude-key').value = ck;
+    if (xk) document.getElementById('grok-key').value = xk;
     document.getElementById('engine-select').value = eng;
     setEngine(eng, true);
   } catch(e) {}
@@ -366,12 +377,16 @@ function setEngine(e, silent) {
   if (e === 'gemini') {
     badge.textContent = 'Free'; badge.className = 'engine-badge gemini';
     label.textContent = 'Analyze with Gemini';
-  } else {
+  } else if (e === 'claude') {
     badge.textContent = '~$0.05/run'; badge.className = 'engine-badge claude';
     label.textContent = 'Analyze with Claude';
+  } else {
+    badge.textContent = '~$0.02/run'; badge.className = 'engine-badge grok';
+    label.textContent = 'Analyze with Grok';
   }
   document.getElementById('gemini-key').classList.toggle('inactive', e !== 'gemini');
   document.getElementById('claude-key').classList.toggle('inactive', e !== 'claude');
+  document.getElementById('grok-key').classList.toggle('inactive', e !== 'grok');
   updateBtn();
 }
 
@@ -379,14 +394,19 @@ function setEngine(e, silent) {
 function checkKeys() {
   var gk = document.getElementById('gemini-key').value.trim();
   var ck = document.getElementById('claude-key').value.trim();
-  var gv = gk.length > 20; // Gemini keys usually start with AIza but format can vary
+  var xk = document.getElementById('grok-key').value.trim();
+  var gv = gk.length > 20;
   var cv = ck.startsWith('sk-ant-') && ck.length > 20;
+  var xv = xk.startsWith('xai-') && xk.length > 10;
   document.getElementById('gemini-status').classList.toggle('ok', gv);
   document.getElementById('claude-status').classList.toggle('ok', cv);
+  document.getElementById('grok-status').classList.toggle('ok', xv);
   document.getElementById('gemini-saved').style.display = gv ? 'inline' : 'none';
   document.getElementById('claude-saved').style.display = cv ? 'inline' : 'none';
+  document.getElementById('grok-saved').style.display = xv ? 'inline' : 'none';
   if (gv) { try { localStorage.setItem('rs_gemini_key', gk); } catch(e) {} }
   if (cv) { try { localStorage.setItem('rs_claude_key', ck); } catch(e) {} }
+  if (xv) { try { localStorage.setItem('rs_grok_key', xk); } catch(e) {} }
   updateBtn();
 }
 
@@ -398,9 +418,9 @@ function toggleKeys() {
 }
 
 function activeKey() {
-  return engine === 'gemini'
-    ? document.getElementById('gemini-key').value.trim()
-    : document.getElementById('claude-key').value.trim();
+  if (engine === 'gemini') return document.getElementById('gemini-key').value.trim();
+  if (engine === 'claude') return document.getElementById('claude-key').value.trim();
+  return document.getElementById('grok-key').value.trim();
 }
 
 function updateBtn() {
@@ -658,6 +678,40 @@ async function runClaude(apiKey, prompt) {
   return raw;
 }
 
+
+// ── GROK ─────────────────────────────────────────────
+async function runGrok(apiKey, prompt) {
+  setStatus('Analyzing with Grok...', 'This may take 15-25 seconds');
+  var msgContent = images.map(function(img) {
+    return { type: 'image_url', image_url: { url: img.src } };
+  });
+  msgContent.push({ type: 'text', text: prompt });
+  var resp = await fetch('https://api.x.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey
+    },
+    body: JSON.stringify({
+      model: 'grok-2-vision-latest',
+      messages: [{ role: 'user', content: msgContent }],
+      max_tokens: 4000,
+      temperature: 0.2
+    })
+  });
+  if (!resp.ok) {
+    var err = await resp.json().catch(function() { return {}; });
+    var msg = (err.error && err.error.message) || ('HTTP ' + resp.status);
+    if (resp.status === 401) throw new Error('Invalid Grok API key. Check it at console.x.ai');
+    if (resp.status === 429) throw new Error('Grok rate limit hit. Wait a moment and try again.');
+    throw new Error(msg);
+  }
+  var data = await resp.json();
+  var raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  if (!raw) throw new Error('Empty response from Grok.');
+  return raw;
+}
+
 // ── ANALYZE ───────────────────────────────────────────
 async function analyze() {
   var key = activeKey();
@@ -677,9 +731,12 @@ async function analyze() {
       var res = await runGemini(key, prompt);
       raw = res.raw;
       bannerInfo = { cls: res.model.tier, note: res.model.note };
-    } else {
+    } else if (engine === 'claude') {
       raw = await runClaude(key, prompt);
       bannerInfo = { cls: 'claude-banner', note: 'Analyzed with <strong>Claude Sonnet</strong> — highest accuracy for book spine reading, coin grading, and memorabilia appraisal.' };
+    } else {
+      raw = await runGrok(key, prompt);
+      bannerInfo = { cls: 'fallback', note: 'Analyzed with <strong>Grok</strong> (xAI). Vision analysis quality may vary — use additional notes to supplement what photos cannot show.' };
     }
     renderResults(extractJSON(raw), bannerInfo);
   } catch(err) {
