@@ -546,20 +546,28 @@ function buildCoinPrompt() {
     'STEP 1 — IDENTIFICATION (do this before grading or valuing):\n' +
     'A. Examine the coin type, design, and denomination from the obverse.\n' +
     'B. Read the date carefully — look for all four digits.\n' +
-    'C. MINT MARK — this is critical. Follow this process:\n' +
-    '   - Actively look for a mint mark in ALL known locations for the coin type:\n' +
-    '     Lincoln cents (pre-1965): reverse lower left of memorial or wheat stalks\n' +
-    '     Jefferson nickels: reverse right of Monticello (pre-1968), then obverse\n' +
-    '     Roosevelt/Mercury dimes: reverse lower left\n' +
-    '     Washington quarters: reverse (pre-1968), then obverse above date\n' +
-    '     Franklin/Walking Liberty halves: reverse\n' +
-    '     Morgan/Peace dollars: reverse\n' +
-    '     Buffalo nickels: reverse below FIVE CENTS\n' +
-    '     Indian Head cents: no mint mark on obverse; check reverse\n' +
-    '   - Possible mint marks: P (Philadelphia, often absent on older coins), D (Denver), S (San Francisco), O (New Orleans), CC (Carson City), W (West Point)\n' +
-    '   - DO NOT default to "None" or "Philadelphia" unless you have actively examined the mint mark location and confirmed no letter is present.\n' +
-    '   - If the image is unclear at the mint mark location, report mint_mark as "Uncertain — examine under magnification" and set grade_confidence to "low".\n' +
-    '   - NEVER assume Philadelphia. If you see ANY mark or smudge in the mint mark location, report what you observe.\n' +
+    'C. MINT MARK — CRITICAL. Use this two-pass process:\n' +
+    '   PASS 1: Identify the coin type and denomination. Then locate the EXACT mint mark position for that coin:\n' +
+    '     Lincoln Wheat cents (1909-1958): reverse, lower-left between wheat stalks\n' +
+    '     Lincoln Memorial cents (1959-1967): obverse, below date\n' +
+    '     Jefferson nickels (pre-1968): reverse, right of Monticello dome\n' +
+    '     Jefferson nickels (1968+): obverse, above date\n' +
+    '     Buffalo nickels: reverse, below FIVE CENTS\n' +
+    '     Mercury/Roosevelt dimes: reverse, lower-left base of torch\n' +
+    '     Washington quarters (pre-1968): reverse, below eagle\n' +
+    '     Walking Liberty half: obverse, lower-left near date OR reverse lower-left (varies by year)\n' +
+    '     Franklin half: reverse, above bell\n' +
+    '     Morgan dollar: reverse, above DO in DOLLAR\n' +
+    '     Peace dollar: reverse, left of eagle tail feathers\n' +
+    '   PASS 2: Zoom your analysis into ONLY that specific location. Describe what letter shape you see.\n' +
+    '     D = angular letter with straight back and curved right side\n' +
+    '     S = curved double-curve letter\n' +
+    '     O = oval or round letter\n' +
+    '     CC = two C shapes side by side\n' +
+    '   Record your raw observation in mint_mark_raw (e.g. "angular D-shaped letter clearly visible").\n' +
+    '   Then set mint_mark to the letter you observed: D, S, O, CC, W, or P.\n' +
+    '   If no letter is present after careful examination, set mint_mark to "None (Philadelphia)".\n' +
+    '   If genuinely unclear, set to "Uncertain" — NEVER guess Philadelphia by default.\n' +
     'D. SPECIAL TOKENS & NON-STANDARD COINS:\n' +
     '   - OPA (Office of Price Administration) ration tokens from WWII: These are small cardboard/fiber tokens, NOT metal coins.\n' +
     '     Red point tokens are identified by a TWO-LETTER code (e.g. "GH", "TK", "BV") — never a single letter.\n' +
@@ -673,7 +681,11 @@ async function callGemini(apiKey, parts, model) {
   var resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model.id + ':generateContent?key=' + apiKey, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 8192 } })
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: 'You are an expert appraiser AI. You MUST respond with valid JSON only. Absolutely no markdown formatting, no code fences, no explanatory text before or after. Your entire response must be a single JSON object starting with { and ending with }.' }] },
+      contents: [{ parts: parts }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+    })
   });
   if (!resp.ok) {
     var err = await resp.json().catch(function() { return {}; });
@@ -753,18 +765,34 @@ async function runClaude(apiKey, prompt) {
 // ── GROK ─────────────────────────────────────────────
 async function runGrok(apiKey, prompt) {
   setStatus('Analyzing with Grok...', 'This may take 15-25 seconds');
-  // Grok vision uses base64 format with image_url type
-  var msgContent = [];
+
+  // Build messages: Grok vision uses OpenAI-compatible format
+  // Images must be passed as base64 data URIs in image_url objects
+  // Text prompt goes FIRST (before images) for best instruction following
+  var userContent = [{ type: 'text', text: prompt }];
   images.forEach(function(img) {
     var base64 = img.src.split(',')[1];
     var mimeType = img.type || 'image/jpeg';
-    msgContent.push({
+    // Ensure we only send supported formats
+    if (mimeType !== 'image/jpeg' && mimeType !== 'image/png' && mimeType !== 'image/webp') {
+      mimeType = 'image/jpeg';
+    }
+    userContent.push({
       type: 'image_url',
       image_url: { url: 'data:' + mimeType + ';base64,' + base64 }
     });
   });
-  msgContent.push({ type: 'text', text: prompt });
-  // Try direct fetch — works from GitHub Pages (https origin), blocked from local file://
+
+  var requestBody = {
+    model: 'grok-2-vision-1212',
+    messages: [
+      { role: 'system', content: 'You are an expert appraiser. Always respond with valid JSON only. No markdown. No explanation. Start with { end with }.' },
+      { role: 'user', content: userContent }
+    ],
+    max_tokens: 4000,
+    temperature: 0.1
+  };
+
   var resp;
   try {
     resp = await fetch('https://api.x.ai/v1/chat/completions', {
@@ -773,29 +801,29 @@ async function runGrok(apiKey, prompt) {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + apiKey
       },
-      body: JSON.stringify({
-        model: 'grok-2-vision-1212',
-        messages: [{ role: 'user', content: msgContent }],
-        max_tokens: 4000,
-        temperature: 0.2
-      })
+      body: JSON.stringify(requestBody)
     });
   } catch(fetchErr) {
-    // CORS or network error — likely running from local file
     throw new Error(
       'Grok blocked the request (CORS). ' +
-      'Grok only works when the app is hosted at a real URL (e.g. GitHub Pages), not opened as a local file. ' +
-      'Upload to GitHub Pages and try again, or use Gemini/Claude which work locally.'
+      'This happens when opening the file locally. ' +
+      'Host on GitHub Pages and it will work, or use Gemini which works locally.'
     );
   }
+
   if (!resp.ok) {
     var errBody = await resp.json().catch(function() { return {}; });
     var msg = (errBody.error && errBody.error.message) || ('HTTP ' + resp.status);
-    if (resp.status === 401) throw new Error('Invalid Grok API key. Check it at console.x.ai');
-    if (resp.status === 429) throw new Error('Grok rate limit hit. Wait a moment and try again.');
-    if (resp.status === 400) throw new Error('Grok 400 error — ' + msg + '. The image format or model name may need updating.');
-    throw new Error('Grok error: ' + msg);
+    if (resp.status === 401) throw new Error('Invalid Grok API key. Check console.x.ai');
+    if (resp.status === 429) throw new Error('Grok rate limit. Wait a moment and try again.');
+    if (resp.status === 400) {
+      // Log the full error for debugging
+      console.error('Grok 400 full error:', JSON.stringify(errBody));
+      throw new Error('Grok 400: ' + msg + ' — see browser console for details (F12).');
+    }
+    throw new Error('Grok: ' + msg);
   }
+
   var data = await resp.json();
   var raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
   if (!raw) throw new Error('Empty response from Grok.');
@@ -915,7 +943,8 @@ function buildCards(items, currentMode) {
       return '<div class="item-card ' + pc + '">' +
         '<div class="card-top"><div class="card-num">' + (idx+1) + '</div><div class="card-info">' +
         '<div class="card-title">' + (item.id || '') + ' \u2014 ' + (item.coin_name || 'Unknown coin') + '</div>' +
-        '<div class="card-sub">' + (item.year || '') + (item.mint_mark && item.mint_mark !== 'None' && item.mint_mark !== 'none' ? ' \u00b7 ' + item.mint_mark + ' mint' : '') + (item.denomination ? ' \u00b7 ' + item.denomination : '') + '</div>' +
+        '<div class="card-sub">' + (item.year || '') + (item.mint_mark ? ' \u00b7 ' + item.mint_mark + ' mint' : '') + (item.denomination ? ' \u00b7 ' + item.denomination : '') + '</div>' +
+        (item.mint_mark_raw ? '<div style="font-size:11px;color:var(--ink-light);font-family:DM Mono,monospace;margin-bottom:6px;padding:3px 8px;background:var(--cream);border-radius:3px;display:inline-block">Mint mark observed: ' + item.mint_mark_raw + '</div>' : '') +
         '<div class="badges">' + pBadge(item.priority) + ' ' + cBadge(item.grade_confidence) + '</div></div></div>' +
         '<div class="sheldon-display"><div class="sheldon-grade-big">' + (item.sheldon_grade || '?') + '</div>' +
         '<div class="sheldon-bar-wrap"><div class="sheldon-bar-label"><span>Poor</span><span>Fine</span><span>MS-70</span></div>' +
