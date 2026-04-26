@@ -388,7 +388,7 @@ function setEngine(e, silent) {
     badge.textContent = '~$0.05/run'; badge.className = 'engine-badge claude';
     label.textContent = 'Analyze with Claude';
   } else {
-    badge.textContent = '~$0.02/run'; badge.className = 'engine-badge grok';
+    badge.textContent = '~$0.05/run'; badge.className = 'engine-badge grok';
     label.textContent = 'Analyze with Grok';
   }
   document.getElementById('gemini-key').classList.toggle('inactive', e !== 'gemini');
@@ -779,12 +779,12 @@ async function runGrok(apiKey, prompt) {
     }
     userContent.push({
       type: 'image_url',
-      image_url: { url: 'data:' + mimeType + ';base64,' + base64 }
+      image_url: { url: 'data:' + mimeType + ';base64,' + base64, detail: 'high' }
     });
   });
 
   var requestBody = {
-    model: 'grok-2-vision-1212',
+    model: 'grok-4.20',
     messages: [
       { role: 'system', content: 'You are an expert appraiser. Always respond with valid JSON only. No markdown. No explanation. Start with { end with }.' },
       { role: 'user', content: userContent }
@@ -794,6 +794,7 @@ async function runGrok(apiKey, prompt) {
   };
 
   var resp;
+  var respText;
   try {
     resp = await fetch('https://api.x.ai/v1/chat/completions', {
       method: 'POST',
@@ -805,28 +806,29 @@ async function runGrok(apiKey, prompt) {
     });
   } catch(fetchErr) {
     throw new Error(
-      'Grok blocked the request (CORS). ' +
-      'This happens when opening the file locally. ' +
-      'Host on GitHub Pages and it will work, or use Gemini which works locally.'
+      'Grok request failed — likely a CORS block. ' +
+      'This works on GitHub Pages but not from a local file. ' +
+      'Error: ' + fetchErr.message
     );
   }
 
+  respText = await resp.text();
   if (!resp.ok) {
-    var errBody = await resp.json().catch(function() { return {}; });
+    var errBody = {};
+    try { errBody = JSON.parse(respText); } catch(e) {}
     var msg = (errBody.error && errBody.error.message) || ('HTTP ' + resp.status);
-    if (resp.status === 401) throw new Error('Invalid Grok API key. Check console.x.ai');
-    if (resp.status === 429) throw new Error('Grok rate limit. Wait a moment and try again.');
-    if (resp.status === 400) {
-      // Log the full error for debugging
-      console.error('Grok 400 full error:', JSON.stringify(errBody));
-      throw new Error('Grok 400: ' + msg + ' — see browser console for details (F12).');
-    }
-    throw new Error('Grok: ' + msg);
+    if (resp.status === 401) throw new Error('Invalid Grok API key — check console.x.ai. Detail: ' + msg);
+    if (resp.status === 429) throw new Error('Grok rate limit hit. Wait a moment and try again.');
+    // Show full response for any other error so we can diagnose
+    throw new Error('Grok ' + resp.status + ': ' + msg + ' | Response: ' + respText.substring(0, 400));
   }
 
-  var data = await resp.json();
+  var data = {};
+  try { data = JSON.parse(respText); } catch(e) {
+    throw new Error('Grok returned non-JSON: ' + respText.substring(0, 300));
+  }
   var raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-  if (!raw) throw new Error('Empty response from Grok.');
+  if (!raw) throw new Error('Grok returned no content. Full response: ' + respText.substring(0, 300));
   return raw;
 }
 
