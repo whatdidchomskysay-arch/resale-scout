@@ -364,6 +364,13 @@ function init() {
     if (xk) document.getElementById('grok-key').value = xk;
     document.getElementById('engine-select').value = eng;
     setEngine(eng, true);
+    // Auto-collapse keys panel if at least one key is already saved
+    if (gk || ck || xk) {
+      keysVisible = false;
+      var rows = document.querySelectorAll('.key-row');
+      rows.forEach(function(r) { r.style.display = 'none'; });
+      document.getElementById('keys-toggle').textContent = 'Show keys';
+    }
   } catch(e) {}
   checkKeys();
 }
@@ -842,7 +849,7 @@ function buildCards(items, currentMode) {
         (item.condition ? ' <span class="badge badge-blue">' + item.condition + '</span>' : '') +
         (item.platform_tip ? ' <span class="platform-tip">' + item.platform_tip + '</span>' : '') +
         '</div></div></div>' +
-        (item.makers_mark && item.makers_mark !== 'None' && item.makers_mark !== 'none' ? '<div class="condition-note"><strong>Maker's mark:</strong> ' + item.makers_mark + '</div>' : '') +
+        (item.makers_mark && item.makers_mark !== 'None' && item.makers_mark !== 'none' ? '<div class="condition-note"><strong>Maker mark:</strong> ' + item.makers_mark + '</div>' : '') +
         (item.condition_notes ? '<div class="condition-note"><strong>Condition:</strong> ' + item.condition_notes + '</div>' : '') +
         '<div class="prices">' +
         '<div class="price-box"><div class="price-box-label">Market price</div><div class="price-val">' + (item.market_price || '—') + '</div><div class="price-time">∼' + (item.time_to_sell_market || '?') + ' to sell</div></div>' +
